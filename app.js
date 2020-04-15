@@ -9,7 +9,7 @@ let discordChannel;
 
 discordClient.on('ready', async () => {
     discordChannel = discordClient.channels.cache.get(config.botChannel[""]);
-    console.log(`Logged in to Discord as ${discordClient.user.tag}!`)
+    log(`Logged in to Discord as ${discordClient.user.tag}!`)
 });
 
 discordClient.login(config.botToken);
@@ -60,14 +60,31 @@ function start() {
 
     mcClient.on('success', packet => {
         log(`Logged in to ${config.mcHost}${config.mcPort===25565?'':':'+config.mcPort} with ${packet.username}`)
+        delay = delayDefault;
     });
 
     mcClient.on('end', () => {
+        log(`[SEVERE] Disconnected from server! Retrying in ${delay/1000}s...`);
         mcClient.removeAllListeners();
-        setTimeout(start, 5000)
+        retry()
+    });
+
+    mcClient.on('error', error => {
+        if (error.code == 'ECONNREFUSED') {
+            log("[SEVERE] Connection was refused!");
+        } else {
+            log ("[ERROR] " + error);
+        }
     })
 }
 start();
+
+const delayDefault = 5000;
+let delay = delayDefault;
+function retry() {
+    setTimeout(start, delay);
+    delay = delay * 5;
+}
 
 async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, group) {
     let message = "[" + dateFormat(new Date(), "isoTime") + "] ";
@@ -89,6 +106,8 @@ async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, g
             }
         }
     }
+
+    message = message.replace(/_/g, "\\_");
 
     log("[SNITCH] " + message);
     await discordChannel.send(message)
@@ -117,7 +136,7 @@ async function sendChatMessage(channel, username, message) {
         discordClient.channels.cache.get(config.botChannel[channel]).send(chatEmbed);
     else
         //discordChannel.send(chatEmbed)
-        console.log("[DISCARDED] " + channel + " " + username + ": " + message);
+        log("[DISCARDED] " + channel + " " + username + ": " + message);
 }
 
 const snitch = /\s*\*\s*([A-Za-z_0-9]{2,16}) (entered snitch at|logged out in snitch at|logged in to snitch at) (\S*) \[(\w+) (-?\d+) (\d+) (-?\d+)](?: (-?[0-9]+)m ([NESW]+))?/;
