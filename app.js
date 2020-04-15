@@ -1,26 +1,20 @@
-const path = require('path')
-const fs = require('fs')
-const config = require('./config/config')
-const Discord = require('discord.js')
-const mc = require('minecraft-protocol')
-const discordClient = new Discord.Client()
+const fs = require('fs');
+const config = require('./config/config');
+const Discord = require('discord.js');
+const mc = require('minecraft-protocol');
+const discordClient = new Discord.Client();
+const dateFormat = require('dateformat');
 
-let discordChannel
+let discordChannel;
+
 discordClient.on('ready', async () => {
-    discordClient.user.setActivity(`${config.mcHost}${config.mcPort===25565?'':':'+config.mcPort}`)
-    discordChannel = discordClient.channels.get(config.botchannel[""])
+    discordChannel = discordClient.channels.cache.get(config.botChannel[""]);
     console.log(`Logged in to Discord as ${discordClient.user.tag}!`)
-})
+});
 
-discordClient.on('message', async msg => {
-    if (msg.author.bot) return
-    if (!msg.content.startsWith('!')) return
+discordClient.login(config.botToken);
 
-    var str = msg.content.substring(1)
-    handleChatMessage(str)
-})
-
-discordClient.login(config.botToken)
+const formattingCodesRegex = /§[0-9a-fk-or]/gi;
 
 function start() {
     const mcClient = mc.createClient({
@@ -29,89 +23,141 @@ function start() {
         username: config.mcUsername,
         password: config.mcPassword,
         version: config.mcVersion
-    })
+    });
 
     mcClient.on('chat', packet => {
-        var msg = ''
-        var json = JSON.parse(packet.message)
-        if(json.text) {
+        let msg = '';
+        const json = JSON.parse(packet.message);
+
+        if (json.text) {
             msg += json.text
         }
-        if(json.extra) {
+
+        if (json.extra) {
             json.extra.forEach(function(m) {
                 if(m.text) {
                     msg += m.text
                 }
             }, this)
         }
-        console.log(`[CHAT]: ${msg}`)
-        handleChatMessage(msg)
-    })
+
+        msg = msg.replace(formattingCodesRegex, "");
+
+        log(`[CHAT] ${msg}`);
+
+        if (snitch.test(msg)) {
+            let group;
+            let hoverText = json.hoverEvent.value[0].text;
+
+            if (hoverText)
+                group = snitch_group.exec(hoverText)[1];
+
+            handleSnitchMessage(msg, group)
+        } else {
+            handleChatMessage(msg)
+        }
+    });
 
     mcClient.on('success', packet => {
-        console.log(`Logged in to ${config.mcHost}${config.mcPort===25565?'':':'+config.mcPort} with ${packet.username}`)
-    })
+        log(`Logged in to ${config.mcHost}${config.mcPort===25565?'':':'+config.mcPort} with ${packet.username}`)
+    });
 
     mcClient.on('end', () => {
-        mcClient.removeAllListeners()
+        mcClient.removeAllListeners();
         setTimeout(start, 5000)
     })
 }
-start()
+start();
 
-function truncate(str, len) {
-    return str.toString().substring(0, len)
-}
+async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, group) {
+    let message = "[" + dateFormat(new Date(), "isoTime") + "] ";
 
-async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z) {
-    await discordChannel.send(`\`${user} ${action} ${snitchName} at ${x}, ${y}, ${z}\``)
+    message += "**" + user + "**";
+    message += " " + action;
+    message += " " + (snitchName == "" ? "unnamed" : snitchName);
+    message += " (" + x + ", " + y + ", " + z + ")";
+
+    if (group) {
+        message += " *[" + group + "]*";
+
+        let groupConfig = config.alertGroups[group];
+
+        if (groupConfig) {
+            for (let test of Object.keys(groupConfig)) {
+                if (snitchName.includes(test))
+                    message += " " + groupConfig[test];
+            }
+        }
+    }
+
+    log("[SNITCH] " + message);
+    await discordChannel.send(message)
 }
 
 async function sendChatMessage(channel, username, message) {
-    var name = username
-    if(channel != null) {
-        name = `[${channel}] ${name}`
-    }
-    const chatEmbed = new Discord.RichEmbed()
-        .setAuthor(name, `https://crafatar.com/renders/head/8667ba71b85a4004af54457a9734eed7`)
+    let name = username;
+
+    if (channel != null)
+        name = `[${channel}] ${name}`;
+
+    const chatEmbed = new Discord.MessageEmbed()
+        .setColor('#14836E')
+        .setAuthor(name, "https://minotar.net/helm/" + username + ".png")
         .setDescription(message)
-        .setTimestamp()
+        .setTimestamp();
     
-    if(channel != null) {
-        chatEmbed.setFooter(channel)
+    if (channel != null)
+        chatEmbed.setFooter(channel);
+    else {
+        chatEmbed.setFooter("Local Chat");
+        channel = "local";
     }
 
-    if(config.botchannel[channel] != "") {
-        discordClient.channels.get(config.botchannel[channel]).send(chatEmbed)
-    } else {
-        discordChannel.send(chatEmbed)
-    }
+    if (config.botChannel[channel] && config.botChannel[channel] !== "")
+        discordClient.channels.cache.get(config.botChannel[channel]).send(chatEmbed);
+    else
+        //discordChannel.send(chatEmbed)
+        console.log("[DISCARDED] " + channel + " " + username + ": " + message);
 }
 
-var snitch = /^(.+)\* (\w+) (entered|logged out in|logged in to) snitch at (.*) \[(\w+) (\d+) (\d+) (.+)\]/
-function handleSnitchMessage(msg) {
-    var matches = snitch.exec(msg)
-    sendSnitchMessage(matches[1], matches[2], matches[3], matches[4], matches[5], matches[6], matches[7])
+const snitch = /\s*\*\s*([A-Za-z_0-9]{2,16}) (entered snitch at|logged out in snitch at|logged in to snitch at) (\S*) \[(\w+) (-?\d+) (\d+) (-?\d+)](?: (-?[0-9]+)m ([NESW]+))?/;
+const snitch_group = /Group: (\w+)/;
+
+function handleSnitchMessage(msg, group) {
+    const matches = snitch.exec(msg);
+
+    let action = "hit";
+
+    if (matches[2] == "logged out in")
+        action = "logged out";
+
+    if (matches[2] == "logged in to")
+        action = "logged in";
+
+    sendSnitchMessage(matches[1], action, matches[3], matches[4], matches[5], matches[6], matches[7], group)
 }
 
-var nl_msg = /^\[(.+)\] (\w+): (.+)/
+const nl_msg = /^\[(.+)] (\w+): (.+)/;
 function handleNameLayerMessage(msg) {
-    var matches = nl_msg.exec(msg)
+    const matches = nl_msg.exec(msg);
     sendChatMessage(matches[1], matches[2], matches[3])
 }
 
-var l_msg = /^(\w+): (.+)/
+const l_msg = /^<(\w+)> (.+)/;
 function handleLocalMessage(msg) {
-    var matches = l_msg.exec(msg)
+    const matches = l_msg.exec(msg);
     sendChatMessage(null, matches[1], matches[2])
 }
 
 function handleChatMessage(msg) {
-    if(snitch.test(msg)) {
-        handleSnitchMessage(msg)
-    } else if(nl_msg.test(msg)) {
+    if (nl_msg.test(msg)) {
         handleNameLayerMessage(msg)
-    } else if(l_msg.test(msg)) {
+    } else if (l_msg.test(msg)) {
         handleLocalMessage(msg)
     }
+}
+
+function log(msg) {
+    const time = dateFormat(new Date(), "isoTime");
+    console.log(time + " " + msg);
 }

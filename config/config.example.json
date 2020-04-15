@@ -1,6 +1,6 @@
 {
     "botToken": "",
-    "botchannel": {
+    "botChannel": {
         "": "",
         "!": ""
     },
@@ -8,5 +8,10 @@
     "mcPassword": "",
     "mcHost": "mc.civclassic.com",
     "mcPort": 25565,
-    "mcVersion": "1.10.2"
+    "mcVersion": "1.12.2",
+    "alertGroups": {
+        "MySnitches": {
+            "!": "@everyone"
+        }
+    }
 }
