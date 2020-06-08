@@ -1,6 +1,6 @@
 {
   "name": "civ-bot",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "A bot for listening for snitch alerts and chat messages then sending them to a discord server.",
   "main": "app.js",
   "scripts": {

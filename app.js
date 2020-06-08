@@ -178,18 +178,18 @@ async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, g
     }
 
     message = message.replace(/_/g, "\\_");
-
-    l.info(`Relayed above snitch message to ${channels.length} Discord channel(s)`);
+    let recv = 0;
 
     channels.forEach(channel_id => {
         let channel = discordClient.channels.cache.get(channel_id);
 
-        try {
-            channel.send(message)
-        } catch (e) {
-            l.error('Failed to send message to Discord: ', e)
+        if (channel) {
+            channel.send(message).catch(e => l.error('Failed to send message to Discord: ', e));
+            recv++;
         }
     });
+
+    l.info(`Snitch sent (${recv}): ${message}`);
 }
 
 async function sendChatMessage(group, username, message) {
@@ -208,7 +208,7 @@ async function sendChatMessage(group, username, message) {
             else
                 channels = [ groupChannels ];
         } else {
-            l.info(`Discarded this message: ${group} ${username}: ${message}`);
+            l.info(`Discarded chat message: ${group} ${username}: ${message}`);
             return
         }
 
@@ -227,17 +227,18 @@ async function sendChatMessage(group, username, message) {
         chatEmbed.setFooter(group)
     }
 
+    let recv = 0;
+
     channels.forEach(channel_id => {
         let channel = discordClient.channels.cache.get(channel_id);
 
         if (channel) {
-            try {
-                channel.send(chatEmbed)
-            } catch (e) {
-                l.error('Failed to send message to Discord', e)
-            }
+            channel.send(chatEmbed).catch(e => l.error('Failed to send message to Discord', e))
+            recv++;
         }
     });
+
+    l.info(`Chat sent (${recv}): ${group} ${username} ${message}`)
 }
 
 const snitch = /\s*\*\s*([A-Za-z_0-9]{2,16}) (entered snitch at|logged out in snitch at|logged in to snitch at) (\S*) \[(\w+) (-?\d+) (\d+) (-?\d+)](?: (-?[0-9]+)m ([NESW]+))?/;
