@@ -1,14 +1,22 @@
 {
     "botToken": "",
-    "botChannel": {
-        "": "",
-        "!": ""
-    },
+
     "mcUsername": "",
     "mcPassword": "",
     "mcHost": "mc.civclassic.com",
     "mcPort": 25565,
     "mcVersion": "1.12.2",
+
+    "chatChannels": {
+        "local": "1",
+        "!": ["1", "2"]
+    },
+
+    "snitchChannels": {
+        "default": "1",
+        "MySnitches": ["1", "2"]
+    },
+
     "alertGroups": {
         "MySnitches": {
             "!": "@everyone"

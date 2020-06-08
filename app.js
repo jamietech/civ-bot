@@ -1,18 +1,56 @@
-const fs = require('fs');
+const winston = require('winston');
+require('winston-daily-rotate-file');
 const config = require('./config/config');
 const Discord = require('discord.js');
 const mc = require('minecraft-protocol');
 const discordClient = new Discord.Client();
 const dateFormat = require('dateformat');
 
-let discordChannel;
+/*
+    Setup logging
+ */
 
-discordClient.on('ready', async () => {
-    discordChannel = discordClient.channels.cache.get(config.botChannel[""]);
-    log(`Logged in to Discord as ${discordClient.user.tag}!`)
+const l_format = winston.format.printf((info) => {
+    return `${dateFormat(new Date(), "isoTime")} ${info.level}\t${info.message}`;
 });
 
-discordClient.login(config.botToken);
+const rotate = new (winston.transports.DailyRotateFile)({
+    filename: '%DATE%.log',
+    datePattern: 'YYYY-MM-DD',
+    zippedArchive: true,
+    dirname: 'logs',
+    createSymlink: true,
+    symlinkName: 'latest.log'
+});
+
+const l = winston.createLogger({
+    level: 'info',
+    transports: [
+        new winston.transports.Console({
+            format: winston.format.combine(winston.format.colorize(), l_format)
+        }),
+        new winston.transports.File({ filename: 'logs/errors.log', level: 'warn' }),
+        rotate
+    ],
+    format: l_format
+});
+
+/*
+    Connect to Discord
+ */
+
+let fallbackChannelSnitch;
+
+discordClient.on('ready', async () => {
+    fallbackChannelSnitch = discordClient.channels.cache.get(config.snitchChannels.default);
+    l.info(`Logged in to Discord as ${discordClient.user.tag}!`)
+});
+
+discordClient.login(config.botToken).catch(error => l.error('Encountered error while connecting to Discord: ', error));
+
+/*
+    Connect to Minecraft
+ */
 
 const formattingCodesRegex = /§[0-9a-fk-or]/gi;
 
@@ -29,21 +67,18 @@ function start() {
         let msg = '';
         const json = JSON.parse(packet.message);
 
-        if (json.text) {
-            msg += json.text
-        }
+        if (json.text)
+            msg += json.text;
 
-        if (json.extra) {
+        if (json.extra)
             json.extra.forEach(function(m) {
-                if(m.text) {
+                if(m.text)
                     msg += m.text
-                }
-            }, this)
-        }
+            }, this);
 
         msg = msg.replace(formattingCodesRegex, "");
 
-        log(`[CHAT] ${msg}`);
+        l.info(`Chat recv: ${msg}`);
 
         if (snitch.test(msg)) {
             let group;
@@ -59,40 +94,66 @@ function start() {
     });
 
     mcClient.on('success', packet => {
-        log(`Logged in to ${config.mcHost}${config.mcPort===25565?'':':'+config.mcPort} with ${packet.username}`)
+        l.info(`Minecraft successfully connected to ${config.mcHost}${config.mcPort === 25565 ? '' : ':' + config.mcPort} with ${packet.username}`);
         delay = delayDefault;
     });
 
     mcClient.on('end', () => {
-        log(`[SEVERE] Disconnected from server! Retrying in ${delay/1000}s...`);
+        l.warn(`Disconnected from server! Retrying in ${delay/1000}s...`);
         mcClient.removeAllListeners();
         retry()
     });
 
+    mcClient.on('disconnect', packet => {
+       l.error(`Kicked from server while joining: ${packet.reason}`)
+    });
+
+    mcClient.on('kick_disconnect', packet => {
+        l.error(`Kicked from server: ${packet.reason}`)
+    });
+
     mcClient.on('error', error => {
         if (error.code == 'ECONNREFUSED') {
-            log("[SEVERE] Connection was refused!");
+            l.error("Connection was refused!");
         } else {
-            log ("[ERROR] " + error);
+            l.error('Encountered an error: ', error);
         }
     })
 }
 start();
 
+/*
+    Deal with reconnection attempts
+ */
+
 const delayDefault = 5000;
 let delay = delayDefault;
+let lastAttempt = 0;
 function retry() {
+    // Cool down
+    let now = Date.now();
+    if (lastAttempt >= now - delayDefault)
+        return;
+    lastAttempt = now;
+
+    // Attempt reconnection
     setTimeout(start, delay);
     delay = delay * 5;
 }
 
+/*
+    Handle messages received
+ */
+
 async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, group) {
-    let message = "[" + dateFormat(new Date(), "isoTime") + "] ";
+    let message = "[" + dateFormat(new Date(), "UTC:HH:MM:ss") + "] ";
 
     message += "**" + user + "**";
     message += " " + action;
     message += " " + (snitchName == "" ? "unnamed" : snitchName);
     message += " (" + x + ", " + y + ", " + z + ")";
+
+    let channels = [ config.snitchChannels.default ];
 
     if (group) {
         message += " *[" + group + "]*";
@@ -105,38 +166,78 @@ async function sendSnitchMessage(user, action, snitchName, worldName, x, y, z, g
                     message += " " + groupConfig[test];
             }
         }
+
+        let groupChannels = config.snitchChannels[group];
+
+        if (groupChannels) {
+            if (groupChannels instanceof Array)
+                channels = groupChannels;
+            else
+                channels = [ groupChannels ];
+        }
     }
 
     message = message.replace(/_/g, "\\_");
 
-    log("[SNITCH] " + message);
-    await discordChannel.send(message)
+    l.info(`Relayed above snitch message to ${channels.length} Discord channel(s)`);
+
+    channels.forEach(channel_id => {
+        let channel = discordClient.channels.cache.get(channel_id);
+
+        try {
+            channel.send(message)
+        } catch (e) {
+            l.error('Failed to send message to Discord: ', e)
+        }
+    });
 }
 
-async function sendChatMessage(channel, username, message) {
+async function sendChatMessage(group, username, message) {
     let name = username;
 
-    if (channel != null)
-        name = `[${channel}] ${name}`;
+    let channels;
+
+    if (group == null) {
+        channels = [ config.chatChannels.local ];
+    } else {
+        let groupChannels = config.chatChannels[group];
+
+        if (groupChannels) {
+            if (groupChannels instanceof Array)
+                channels = groupChannels;
+            else
+                channels = [ groupChannels ];
+        } else {
+            l.info(`Discarded this message: ${group} ${username}: ${message}`);
+            return
+        }
+
+        name = `[${group}] ${name}`
+    }
 
     const chatEmbed = new Discord.MessageEmbed()
         .setColor('#14836E')
         .setAuthor(name, "https://minotar.net/helm/" + username + ".png")
         .setDescription(message)
         .setTimestamp();
-    
-    if (channel != null)
-        chatEmbed.setFooter(channel);
-    else {
-        chatEmbed.setFooter("Local Chat");
-        channel = "local";
+
+    if (group == null) {
+        chatEmbed.setFooter("Local Chat")
+    } else {
+        chatEmbed.setFooter(group)
     }
 
-    if (config.botChannel[channel] && config.botChannel[channel] !== "")
-        discordClient.channels.cache.get(config.botChannel[channel]).send(chatEmbed);
-    else
-        //discordChannel.send(chatEmbed)
-        log("[DISCARDED] " + channel + " " + username + ": " + message);
+    channels.forEach(channel_id => {
+        let channel = discordClient.channels.cache.get(channel_id);
+
+        if (channel) {
+            try {
+                channel.send(chatEmbed)
+            } catch (e) {
+                l.error('Failed to send message to Discord', e)
+            }
+        }
+    });
 }
 
 const snitch = /\s*\*\s*([A-Za-z_0-9]{2,16}) (entered snitch at|logged out in snitch at|logged in to snitch at) (\S*) \[(\w+) (-?\d+) (\d+) (-?\d+)](?: (-?[0-9]+)m ([NESW]+))?/;
@@ -174,9 +275,4 @@ function handleChatMessage(msg) {
     } else if (l_msg.test(msg)) {
         handleLocalMessage(msg)
     }
-}
-
-function log(msg) {
-    const time = dateFormat(new Date(), "isoTime");
-    console.log(time + " " + msg);
 }
